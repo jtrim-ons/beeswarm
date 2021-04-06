@@ -8,3 +8,5 @@ Imports: stats, graphics, grDevices, utils
 Description: The bee swarm plot is a one-dimensional scatter plot like "stripchart", but with closely-packed, non-overlapping points. 
 License: Artistic-2.0
 URL: https://github.com/aroneklund/beeswarm
+Imports: Rcpp (>= 1.0.6)
+LinkingTo: Rcpp
