@@ -5,10 +5,14 @@
 #include "beeswarm.h"
 
 static R_NativePrimitiveArgType calculateSwarm_types[] = {
-    REALSXP, INTSXP, LGLSXP, INTSXP, INTSXP, REALSXP, REALSXP};
+    REALSXP, INTSXP, INTSXP, INTSXP, INTSXP, INTSXP, REALSXP, REALSXP};
+
+static R_NativePrimitiveArgType calculateCompactSwarm_types[] = {
+    REALSXP, INTSXP, INTSXP, INTSXP, REALSXP, REALSXP};
 
 static const R_CMethodDef CEntries[] = {
-    {"calculateSwarm", (DL_FUNC) &calculateSwarm, 7, calculateSwarm_types},
+    {"calculateSwarm", (DL_FUNC) &calculateSwarm, 8, calculateSwarm_types},
+    {"calculateCompactSwarm", (DL_FUNC) &calculateCompactSwarm, 6, calculateCompactSwarm_types},
     {NULL, NULL, 0, NULL}
 };
 

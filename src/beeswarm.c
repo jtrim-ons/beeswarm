@@ -6,64 +6,86 @@
 #include <R_ext/Utils.h>
 #include <R_ext/Visibility.h>
 
-static bool is_y_feasible(double y, double *pre_dx_sq,
-    double *pre_y, int pre_xy_len)
+static bool is_y_feasible(double y, double *pre_dxsq_y,
+    int start_idx, int end_idx)
 {
-  for (int i=0; i<pre_xy_len; i++) {
-    double y_diff = y - pre_y[i];
-    if (pre_dx_sq[i] + y_diff * y_diff < 0.999)
+  for (int i=start_idx; i<end_idx; i++) {
+    double pre_dx_sq = pre_dxsq_y[i * 2];
+    double pre_y = pre_dxsq_y[i * 2 + 1];
+    double y_diff = y - pre_y;
+    if (pre_dx_sq + y_diff * y_diff < 0.999)
       return false;
   }
   return true;
 }
 
-static void swarm(double *x, int n, int side,
+int compare_y(const void *a, const void *b)
+{
+  double y0 = ((double *)a)[1];
+  double y1 = ((double *)b)[1];
+  return (y0 > y1) - (y0 < y1);
+}
+
+bool can_use_poty(int j, double poty, double *nearby_dxsq_y, int nearby_xy_len)
+{
+  int start = j;
+  while (start > 0 && nearby_dxsq_y[2*(start-1)+1] > poty - 1) --start;
+  int end = j;
+  while (end < nearby_xy_len && nearby_dxsq_y[2*end+1] < poty + 1) ++end;
+  return is_y_feasible(poty, nearby_dxsq_y, start, end);
+}
+
+static void swarm(double *x, int n, int *priority, int *order, int side,
     int *placed, double *workspace, double *y)
 {
-  for (int i=0; i<n; i++) {
-    // place the i^th point
+  for (int iter=0; iter<n; iter++) {
+    // place a point
+
+    int i = order[iter];
 
     R_CheckUserInterrupt();
 
-    // poty is an array of potential y values for the next point to be placed
-    double *poty = workspace;
-    int poty_len = 0;
-    poty[poty_len++] = 0;
-
-    // poty_low contains potential y values that are below the y values of
-    // previously-placed points; these will be added to poty if side != 1
-    double *poty_low = workspace + n;
-    int poty_low_len = 0;
-
-    // nearby_y is an array containing the y values of previously-placed points
-    // that are within a distance of 1 horizontally from the i^th point (which
-    // is the next point to be placed).  There is one element of nearby_dx_sq
-    // for each element of nearby_y; each element of nearby_dx_sq corresponds to
-    // the square of the horizontal distance from a point to the i^th point.
-    double *nearby_dx_sq = workspace + 2 * n;
-    double *nearby_y = workspace + 3 * n;
+    // nearby_dxsq_y is a collection of pairs, stored as a flat array.
+    // Each pair corresponds to a previously-placed point that is within a
+    // distance of 1 horizontally from the point that will be placed.  The
+    // pair contains:
+    //    y value
+    //    square of horizontal distance between this point and the point to be placed.
+    // nearby_xy_len is the number of pairs in nearby_dxsq_y
+    double *nearby_dxsq_y = workspace;
     int nearby_xy_len = 0;
 
-    for (int j=0; j<i; j++) {
-      if (fabs(x[i] - x[j]) >= 1) continue;
+    int start = i;
+    while (start > 0 && x[start-1] > x[i] - 1) --start;
+    for (int j=start; j<n; j++) {
+      if (priority[j] >= iter) continue;   // skip unplaced points
+      if (x[j] >= x[i] + 1) break;
       double x_diff = x[i] - x[j];
-      nearby_dx_sq[nearby_xy_len] = x_diff * x_diff;
-      nearby_y[nearby_xy_len] = y[j];
+      nearby_dxsq_y[nearby_xy_len * 2] = x_diff * x_diff;
+      nearby_dxsq_y[nearby_xy_len * 2 + 1] = y[j];
       nearby_xy_len++;
-      double poty_off = sqrt(1 - x_diff * x_diff);
-      poty[poty_len++] = y[j] + poty_off;
-      poty_low[poty_low_len++] = y[j] - poty_off;
     }
-    if (side == -1)
-        poty_len = 1;   // remove poty values > 0
-    if (side != 1)
-      for (int j=0; j<poty_low_len; j++)
-        poty[poty_len++] = poty_low[j];
-    y[i] = DBL_MAX;
-    for (int j=0; j<poty_len; j++) {
-      if (fabs(poty[j]) < fabs(y[i]) &&
-            is_y_feasible(poty[j], nearby_dx_sq, nearby_y, nearby_xy_len)) {
-        y[i] = poty[j];
+
+    qsort(nearby_dxsq_y, nearby_xy_len, 2 * sizeof(double), compare_y);
+
+    if (is_y_feasible(0, nearby_dxsq_y, 0, nearby_xy_len)) {
+      y[i] = 0;
+    } else {
+      y[i] = DBL_MAX;
+      for (int j=0; j<nearby_xy_len; j++) {
+        double dx_sq = nearby_dxsq_y[j * 2];
+        double y_ = nearby_dxsq_y[j * 2 + 1];
+        double poty_off = sqrt(1 - dx_sq);
+        if (side != -1) {
+          double poty = y_ + poty_off;
+          if (fabs(poty) <= fabs(y[i]) && can_use_poty(j, poty, nearby_dxsq_y, nearby_xy_len))
+            y[i] = poty;
+        }
+        if (side != 1) {
+          double poty = y_ - poty_off;
+          if (fabs(poty) < fabs(y[i]) && can_use_poty(j, poty, nearby_dxsq_y, nearby_xy_len))
+            y[i] = poty;
+        }
       }
     }
   }
@@ -130,18 +152,31 @@ static void compactSwarm(double *x, int n, int side,
  * Parameters:
  * x         circle positions on data axis
  * n         length of x
- * compact   use compact layout?
+ * priority  1 for first point to be placed etc.
+ * order     inverse permutation of `priority`
  * side      -1, 0, or 1
  * placed    which circles have been placed (logical type)
  * workspace an array of doubles for internal use
  * y         (output) circle positions on non-data axis
  */
-void attribute_hidden calculateSwarm(double *x, int *n, int *compact, int *side,
+void attribute_hidden calculateSwarm(double *x, int *n, int *priority,
+    int *order, int *side, int *placed, double *workspace, double *y)
+{
+  swarm(x, *n, priority, order, *side, placed, workspace, y);
+}
+
+/* Compute a compact beeswarm layout for the array x.
+ *
+ * Parameters:
+ * x         circle positions on data axis
+ * n         length of x
+ * side      -1, 0, or 1
+ * placed    which circles have been placed (logical type)
+ * workspace an array of doubles for internal use
+ * y         (output) circle positions on non-data axis
+ */
+void attribute_hidden calculateCompactSwarm(double *x, int *n, int *side,
     int *placed, double *workspace, double *y)
 {
-  if (*compact) {
-    compactSwarm(x, *n, *side, placed, workspace, y);
-  } else {
-    swarm(x, *n, *side, placed, workspace, y);
-  }
+  compactSwarm(x, *n, *side, placed, workspace, y);
 }

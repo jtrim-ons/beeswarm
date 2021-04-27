@@ -460,8 +460,51 @@ beeswarm.formula <- function (formula, data = NULL, subset, na.action = NULL,
 }
 
 
-.calculateSwarmUsingC <- function(x, dsize, gsize, side = 0L, priority = "ascending",
-    compact = FALSE) {
+.calculateSwarmUsingC <- function(x, dsize, gsize, side = 0L, priority = "ascending") {
+  if(length(x) == 0) return(numeric(0))
+  stopifnot(side %in% -1:1)
+
+  out <- data.frame(x = x / dsize, index = seq(along = x))
+
+  #### Determine the order in which points will be placed
+  if(     priority == "ascending" ) { out$point_priority <- order(order( out$x)) } ## default "smile"
+  else if(priority == "descending") { out$point_priority <- order(order(-out$x)) } ## frown
+  else if(priority == "none") { out$point_priority <- 1:nrow(out)} ## do not reorder
+  else if(priority == "density") {
+    dens.x <- density(out$x, na.rm = TRUE)  ## compute kernel density estimate
+    dens.interp <- approx(dens.x$x, dens.x$y, xout = out$x, rule = 2)  ## interpolated density
+    out$point_priority <- order(order(-dens.interp$y))  ## arrange outward from densest areas
+  }
+  else if(priority == "random") {
+    out$point_priority <- order(sample(nrow(out)))
+  }
+
+  out <- out[order( out$x), ] # Sort by ascending x
+
+  out <- out[!is.na(out$x), ] # Remove NAs
+
+  out$point_priority <- rank(out$point_priority)  # Get priorities after removing NAs
+  point_order <- order(out$point_priority)
+
+  n <- nrow(out)
+
+  #### place the points
+  result <- .C(C_calculateSwarm,
+               x = as.double(out$x),
+               n = n,
+               priority = as.integer(out$point_priority - 1L),
+               order = as.integer(point_order - 1L),
+               side = as.integer(side),
+               placed = integer(n),         # used internally by C implementations
+               workspace = numeric(n * 2),  # used internally by C implementations
+               y = numeric(n))
+  y <- rep(NA, length(x))
+  y[out$index] <- result[[8]] * gsize
+  y
+}
+
+
+.calculateCompactSwarmUsingC <- function(x, dsize, gsize, side = 0L, priority = "ascending") {
   if(length(x) == 0) return(numeric(0))
   stopifnot(side %in% -1:1)
 
@@ -484,16 +527,15 @@ beeswarm.formula <- function (formula, data = NULL, subset, na.action = NULL,
   n <- nrow(out)
 
   #### place the points
-  result <- .C(C_calculateSwarm,
+  result <- .C(C_calculateCompactSwarm,
                x = as.double(out$x),
                n = n,
-               compact = as.logical(compact),
                side = as.integer(side),
                placed = integer(n),         # used internally by C implementations
-               workspace = numeric(n * 4),  # used internally by C implementations
+               workspace = numeric(n * 3),  # used internally by C implementations
                y = numeric(n))
   y <- rep(NA, length(x))
-  y[out$index] <- result[[7]] * gsize
+  y[out$index] <- result[[6]] * gsize
   y
 }
 
@@ -516,8 +558,9 @@ swarmx <- function(x, y,
   if(xlog) xy$x <- log10(xy$x)
   if(ylog) xy$y <- log10(xy$y)
   if (fast) {
-    x.new <- xy$x + .calculateSwarmUsingC(xy$y, dsize = ysize * cex,
-      gsize = xsize * cex, side = side, priority = priority, compact = compact)
+    swarmFn <- ifelse(compact, .calculateCompactSwarmUsingC, .calculateSwarmUsingC)
+    x.new <- xy$x + swarmFn(xy$y, dsize = ysize * cex,
+      gsize = xsize * cex, side = side, priority = priority)
   } else {
     swarmFn <- ifelse(compact, .calculateCompactSwarm, .calculateSwarm)
     x.new <- xy$x + swarmFn(xy$y, dsize = ysize * cex, gsize = xsize * cex,
@@ -546,8 +589,9 @@ swarmy <- function(x, y,
   if(xlog) xy$x <- log10(xy$x)
   if(ylog) xy$y <- log10(xy$y)
   if (fast) {
-    y.new <- xy$y + .calculateSwarmUsingC(xy$x, dsize = xsize * cex,
-      gsize = ysize * cex, side = side, priority = priority, compact = compact)
+    swarmFn <- ifelse(compact, .calculateCompactSwarmUsingC, .calculateSwarmUsingC)
+    y.new <- xy$y + swarmFn(xy$x, dsize = xsize * cex,
+      gsize = ysize * cex, side = side, priority = priority)
   } else {
     swarmFn <- ifelse(compact, .calculateCompactSwarm, .calculateSwarm)
     y.new <- xy$y + swarmFn(xy$x, dsize = xsize * cex, gsize = ysize * cex,
