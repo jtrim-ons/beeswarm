@@ -6,12 +6,17 @@
 #include <R_ext/Utils.h>
 #include <R_ext/Visibility.h>
 
+#define TUPLE_LEN 3
+#define POINT_DX_SQ(arr, index) ((arr)[(index) * TUPLE_LEN])
+#define POINT_Y(arr, index) ((arr)[(index) * TUPLE_LEN + 1])
+#define POINT_PRIORITY(arr, index) ((arr)[(index) * TUPLE_LEN + 2])
+
 static bool is_y_feasible(double y, double *pre_dxsq_y,
     int start_idx, int end_idx)
 {
   for (int i=start_idx; i<end_idx; i++) {
-    double pre_dx_sq = pre_dxsq_y[i * 2];
-    double pre_y = pre_dxsq_y[i * 2 + 1];
+    double pre_dx_sq = POINT_DX_SQ(pre_dxsq_y, i);
+    double pre_y = POINT_Y(pre_dxsq_y, i);
     double y_diff = y - pre_y;
     if (pre_dx_sq + y_diff * y_diff < 0.999)
       return false;
@@ -21,17 +26,19 @@ static bool is_y_feasible(double y, double *pre_dxsq_y,
 
 int compare_y(const void *a, const void *b)
 {
-  double y0 = ((double *)a)[1];
-  double y1 = ((double *)b)[1];
+  double *d0 = (double *)a;
+  double *d1 = (double *)b;
+  double y0 = POINT_Y(d0, 0);
+  double y1 = POINT_Y(d1, 0);
   return (y0 > y1) - (y0 < y1);
 }
 
 bool can_use_poty(int j, double poty, double *nearby_dxsq_y, int nearby_xy_len)
 {
   int start = j;
-  while (start > 0 && nearby_dxsq_y[2*(start-1)+1] > poty - 1) --start;
+  while (start > 0 && POINT_Y(nearby_dxsq_y, start-1) > poty - 1) --start;
   int end = j;
-  while (end < nearby_xy_len && nearby_dxsq_y[2*end+1] < poty + 1) ++end;
+  while (end < nearby_xy_len && POINT_Y(nearby_dxsq_y, end) < poty + 1) ++end;
   return is_y_feasible(poty, nearby_dxsq_y, start, end);
 }
 
@@ -45,12 +52,13 @@ static void swarm(double *x, int n, int *priority, int *order, int side,
 
     R_CheckUserInterrupt();
 
-    // nearby_dxsq_y is a collection of pairs, stored as a flat array.
-    // Each pair corresponds to a previously-placed point that is within a
+    // nearby_dxsq_y is a collection of triples, stored as a flat array.
+    // Each triple corresponds to a previously-placed point that is within a
     // distance of 1 horizontally from the point that will be placed.  The
-    // pair contains:
+    // triple contains:
     //    y value
     //    square of horizontal distance between this point and the point to be placed.
+    //    priority (poisition in insertion order) of the point
     // nearby_xy_len is the number of pairs in nearby_dxsq_y
     double *nearby_dxsq_y = workspace;
     int nearby_xy_len = 0;
@@ -61,30 +69,40 @@ static void swarm(double *x, int n, int *priority, int *order, int side,
       if (priority[j] >= iter) continue;   // skip unplaced points
       if (x[j] >= x[i] + 1) break;
       double x_diff = x[i] - x[j];
-      nearby_dxsq_y[nearby_xy_len * 2] = x_diff * x_diff;
-      nearby_dxsq_y[nearby_xy_len * 2 + 1] = y[j];
+      POINT_DX_SQ(nearby_dxsq_y, nearby_xy_len) = x_diff * x_diff;
+      POINT_Y(nearby_dxsq_y, nearby_xy_len) = y[j];
+      POINT_PRIORITY(nearby_dxsq_y, nearby_xy_len) = priority[j];
       nearby_xy_len++;
     }
 
-    qsort(nearby_dxsq_y, nearby_xy_len, 2 * sizeof(double), compare_y);
+    qsort(nearby_dxsq_y, nearby_xy_len, TUPLE_LEN * sizeof(double), compare_y);
 
     if (is_y_feasible(0, nearby_dxsq_y, 0, nearby_xy_len)) {
       y[i] = 0;
     } else {
       y[i] = DBL_MAX;
-      for (int j=0; j<nearby_xy_len; j++) {
-        double dx_sq = nearby_dxsq_y[j * 2];
-        double y_ = nearby_dxsq_y[j * 2 + 1];
-        double poty_off = sqrt(1 - dx_sq);
-        if (side != -1) {
-          double poty = y_ + poty_off;
-          if (fabs(poty) <= fabs(y[i]) && can_use_poty(j, poty, nearby_dxsq_y, nearby_xy_len))
+      int p = n;      // priority of the existing point from which y[i] was computed
+      if (side != -1) {
+        for (int j=0; j<nearby_xy_len; j++) {
+          double poty = POINT_Y(nearby_dxsq_y, j) + sqrt(1 - POINT_DX_SQ(nearby_dxsq_y, j));
+          bool is_improvement = fabs(poty) <= fabs(y[i]) &&
+                                (fabs(poty) < fabs(y[i]) || POINT_PRIORITY(nearby_dxsq_y, j) < p);
+          if (is_improvement && can_use_poty(j, poty, nearby_dxsq_y, nearby_xy_len)) {
             y[i] = poty;
+            p = POINT_PRIORITY(nearby_dxsq_y, j);
+          }
         }
-        if (side != 1) {
-          double poty = y_ - poty_off;
-          if (fabs(poty) < fabs(y[i]) && can_use_poty(j, poty, nearby_dxsq_y, nearby_xy_len))
+      }
+      p = -1;
+      if (side != 1) {
+        for (int j=0; j<nearby_xy_len; j++) {
+          double poty = POINT_Y(nearby_dxsq_y, j) - sqrt(1 - POINT_DX_SQ(nearby_dxsq_y, j));
+          bool is_improvement = fabs(poty) <= fabs(y[i]) &&
+                                (fabs(poty) < fabs(y[i]) || POINT_PRIORITY(nearby_dxsq_y, j) < p);
+          if (is_improvement && can_use_poty(j, poty, nearby_dxsq_y, nearby_xy_len)) {
             y[i] = poty;
+            p = POINT_PRIORITY(nearby_dxsq_y, j);
+          }
         }
       }
     }

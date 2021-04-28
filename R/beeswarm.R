@@ -496,7 +496,7 @@ beeswarm.formula <- function (formula, data = NULL, subset, na.action = NULL,
                order = as.integer(point_order - 1L),
                side = as.integer(side),
                placed = integer(n),         # used internally by C implementations
-               workspace = numeric(n * 2),  # used internally by C implementations
+               workspace = numeric(n * 3),  # used internally by C implementations
                y = numeric(n))
   y <- rep(NA, length(x))
   y[out$index] <- result[[8]] * gsize
